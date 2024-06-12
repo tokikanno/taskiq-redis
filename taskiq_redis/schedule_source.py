@@ -1,5 +1,6 @@
 import sys
 from contextlib import asynccontextmanager
+from functools import reduce
 from typing import TYPE_CHECKING, Any, AsyncIterator, List, Optional, Tuple
 
 from redis.asyncio import (
