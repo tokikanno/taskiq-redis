@@ -1,5 +1,6 @@
 import sys
 from contextlib import asynccontextmanager
+from functools import reduce
 from typing import TYPE_CHECKING, Any, AsyncIterator, List, Optional, Tuple
 
 from redis.asyncio import (
@@ -136,6 +137,7 @@ class RedisClusterScheduleSource(ScheduleSource):
         self,
         url: str,
         prefix: str = "schedule",
+        buffer_size: int = 50,
         serializer: Optional[TaskiqSerializer] = None,
         **connection_kwargs: Any,
     ) -> None:
@@ -144,6 +146,7 @@ class RedisClusterScheduleSource(ScheduleSource):
             url,
             **connection_kwargs,
         )
+        self.buffer_size = buffer_size
         if serializer is None:
             serializer = PickleSerializer()
         self.serializer = serializer
@@ -164,6 +167,17 @@ class RedisClusterScheduleSource(ScheduleSource):
             self.serializer.dumpb(model_dump(schedule)),
         )
 
+    async def _fetch_tasks_by_keys(self, keys: List[str]) -> List[ScheduledTask]:
+        return [
+            model_validate(
+                ScheduledTask,
+                self.serializer.loadb(raw_schedule),
+            )
+            for raw_schedule in await reduce(
+                lambda p, k: p.get(k), keys, self.redis.pipeline()
+            ).execute()
+        ]
+
     async def get_schedules(self) -> List[ScheduledTask]:
         """
         Get all schedules from redis.
@@ -172,14 +186,17 @@ class RedisClusterScheduleSource(ScheduleSource):
 
         :return: list of schedules.
         """
-        schedules = []
+        schedules: List[ScheduledTask] = []
+        keys: List[str] = []
         async for key in self.redis.scan_iter(f"{self.prefix}:*"):  # type: ignore[attr-defined]
-            raw_schedule = await self.redis.get(key)  # type: ignore[attr-defined]
-            parsed_schedule = model_validate(
-                ScheduledTask,
-                self.serializer.loadb(raw_schedule),
-            )
-            schedules.append(parsed_schedule)
+            keys.append(key)
+            if len(keys) == self.buffer_size:
+                schedules.append(await self._fetch_tasks_by_keys(keys))
+                keys.clear()
+
+        if keys:
+            schedules.append(await self._fetch_tasks_by_keys(keys))
+
         return schedules
 
     async def post_send(self, task: ScheduledTask) -> None:
