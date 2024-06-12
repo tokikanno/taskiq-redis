@@ -174,7 +174,7 @@ class RedisClusterScheduleSource(ScheduleSource):
                 self.serializer.loadb(raw_schedule),
             )
             for raw_schedule in await reduce(
-                lambda k, p: p.get(k), keys, self.redis.pipeline()
+                lambda p, k: p.get(k), keys, self.redis.pipeline()
             ).execute()
         ]
 
